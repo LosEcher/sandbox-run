@@ -232,6 +232,9 @@ fn walk(
             .map_err(|e| e.to_string())?
             .to_string_lossy()
             .into_owned();
+        // normalize to forward slashes so glob patterns + pollution paths are
+        // platform-independent (Windows produces backslashes)
+        let rel = rel.replace('\\', "/");
         let ft = ent
             .file_type()
             .map_err(|e| format!("file_type {}: {e}", ent.path().display()))?;
