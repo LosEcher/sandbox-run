@@ -14,6 +14,7 @@ use crate::types::VerifyResult;
 /// Tail cap per stream (default 64 KiB) — errors cluster at the end.
 pub const TAIL_CAP: usize = 64 * 1024;
 /// Grace between SIGTERM and SIGKILL when killing the tree.
+#[cfg(unix)]
 pub const KILL_GRACE: Duration = Duration::from_secs(1);
 
 pub struct ExecSpec {
@@ -27,34 +28,15 @@ pub struct ExecSpec {
 /// caller exits 2. Everything else is a VerifyResult.
 pub fn run(spec: &ExecSpec) -> Result<VerifyResult, String> {
     let start = Instant::now();
-    let mut cmd = Command::new(&spec.argv[0]);
-    cmd.args(&spec.argv[1..]);
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .current_dir(&spec.workdir);
-    for (k, v) in &spec.env {
-        cmd.env(k, v);
-    }
-    // own process group so the whole tree dies together
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
-    }
-
-    let mut child = cmd.spawn().map_err(|e| {
-        format!(
-            "cannot spawn verify command `{}`: {e} (is it on PATH / synced into the sandbox?)",
-            spec.argv.join(" ")
-        )
-    })?;
+    let mut child = match spawn_verify(spec) {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(format!(
+                "cannot spawn verify command `{}`: {e} (is it on PATH / synced into the sandbox?)",
+                spec.argv.join(" ")
+            ))
+        }
+    };
 
     let out_t = child
         .stdout
@@ -114,6 +96,56 @@ pub fn run(spec: &ExecSpec) -> Result<VerifyResult, String> {
         truncated: out_trunc || err_trunc,
         killed,
     })
+}
+
+/// Spawn the verify process, applying execvp-style ENOEXEC fallback: a
+/// shebang-less script cannot be exec'd directly on Linux (execve → ENOEXEC),
+/// while macOS posix_spawn falls back to /bin/sh implicitly. Without this,
+/// `sandbox-run -- ./verify.sh` would work on macOS and fail on Linux.
+#[cfg(unix)]
+fn spawn_verify(spec: &ExecSpec) -> Result<Child, std::io::Error> {
+    match spawn_argv(&spec.argv[0], &spec.argv[1..], spec) {
+        Ok(c) => Ok(c),
+        Err(e) if e.raw_os_error() == Some(libc::ENOEXEC) => {
+            // run the script via sh: sh <script> <args...>
+            let mut sh_argv = Vec::with_capacity(spec.argv.len() + 1);
+            sh_argv.push("sh".to_string());
+            sh_argv.extend(spec.argv.iter().cloned());
+            spawn_argv(&sh_argv[0], &sh_argv[1..], spec)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+#[cfg(windows)]
+fn spawn_verify(spec: &ExecSpec) -> Result<Child, std::io::Error> {
+    spawn_argv(&spec.argv[0], &spec.argv[1..], spec)
+}
+
+/// Build and spawn the process: own process group (whole-tree kill),
+/// inherited env + overrides, cwd = sandbox.
+fn spawn_argv(program: &str, args: &[String], spec: &ExecSpec) -> Result<Child, std::io::Error> {
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .current_dir(&spec.workdir);
+    for (k, v) in &spec.env {
+        cmd.env(k, v);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    }
+    cmd.spawn()
 }
 
 /// Read a stream to EOF keeping only the tail `max` bytes (drains the rest so
@@ -255,6 +287,41 @@ mod tests {
         assert!(r.truncated);
         assert!(r.output_tail.trim_end().ends_with("END"));
         assert!(r.output_tail.len() <= 2 * TAIL_CAP + 16);
+    }
+
+    #[test]
+    fn enoexec_fallback_runs_shebangless_script() {
+        if cfg!(windows) {
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!("sr-enoexec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let script = tmp.join("no-shebang.sh");
+        std::fs::write(&script, "echo ran-via-sh; exit 0").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let spec = ExecSpec {
+            argv: vec![script.to_string_lossy().into_owned()],
+            workdir: tmp.clone(),
+            env: vec![],
+            timeout: Duration::from_secs(5),
+        };
+        let r = run(&spec).unwrap();
+        assert_eq!(
+            r.exit_code,
+            Some(0),
+            "shebang-less script must run via sh fallback"
+        );
+        assert!(
+            r.output_tail.contains("ran-via-sh"),
+            "output: {}",
+            r.output_tail
+        );
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 
     #[test]

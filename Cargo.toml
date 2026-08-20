@@ -1,6 +1,6 @@
 [package]
 name = "sandboxrun"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Isolated verification execution for AI agents: run build/test/lint inside a git worktree or jj workspace so the main tree is never polluted. Binary: sandbox-run."
 license = "MIT"
@@ -15,5 +15,5 @@ serde_json = "1"
 sha2 = "0.10"
 
 [[bin]]
-name = "sandboxrun"
+name = "sandbox-run"
 path = "src/main.rs"
