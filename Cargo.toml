@@ -1,6 +1,6 @@
 [package]
-name = "sandboxrun"
-version = "0.1.2"
+name = "sandbox-run-cli"
+version = "0.1.3"
 edition = "2021"
 description = "Isolated verification execution for AI agents: run build/test/lint inside a git worktree or jj workspace so the main tree is never polluted. Binary: sandbox-run."
 license = "MIT"
