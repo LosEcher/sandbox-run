@@ -93,7 +93,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sandbox-run"
+name = "sandboxrun"
 version = "0.1.0"
 dependencies = [
  "libc",

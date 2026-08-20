@@ -57,8 +57,13 @@ ChangeSet (explicit or git/jj diff) → Sandbox (worktree/workspace + overlay)
 ## Install
 
 ```sh
-cargo install sandbox-run        # or download a release binary
+cargo install sandboxrun         # binary: sandbox-run
 ```
+
+> The crates.io name `sandbox-run` is taken by an unrelated crate; this
+> project publishes as `sandboxrun` and installs the `sandbox-run` binary.
+> Prefer the [GitHub Releases](https://github.com/LosEcher/sandbox-run/releases)
+> binaries (`sandbox-run-<os>-<arch>`) when you need a static artifact.
 
 ## Usage
 
