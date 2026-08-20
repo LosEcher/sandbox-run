@@ -50,7 +50,11 @@ jobs:
         run: cargo build
       - name: Unit tests
         run: cargo test
+      # Full acceptance gates run on unix (git + jj). Windows runs unit
+      # tests only in P0: gates.sh needs posix tools (pgrep/shasum) that
+      # git-bash lacks; Windows gates are a P1 acceptance item.
       - name: Acceptance gates (git + jj)
+        if: runner.os != 'Windows'
         shell: bash
         run: bash test/gates.sh
 
