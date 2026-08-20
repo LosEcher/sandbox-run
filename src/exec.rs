@@ -229,7 +229,10 @@ mod tests {
         let r = run(&spec).unwrap();
         assert!(r.killed, "expected timeout kill");
         assert_eq!(r.exit_code, None);
-        assert!(start.elapsed() < Duration::from_secs(5), "kill took too long");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "kill took too long"
+        );
         // no residual sleep from this test's tree
         let out = Command::new("sh")
             .arg("-c")

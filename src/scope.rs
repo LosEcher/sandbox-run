@@ -112,7 +112,12 @@ pub fn status_entries(out: &[u8]) -> Vec<(String, String)> {
     entries
 }
 
-fn git_scope(cwd: &Path, base: &str, excludes: &[String], ledger_rel: &Option<String>) -> Result<Scope, ScopeError> {
+fn git_scope(
+    cwd: &Path,
+    base: &str,
+    excludes: &[String],
+    ledger_rel: &Option<String>,
+) -> Result<Scope, ScopeError> {
     // tracked changes vs base (all statuses: modified/added/deleted/renamed)
     let tracked = run(Command::new("git")
         .arg("diff")
@@ -147,14 +152,22 @@ fn git_scope(cwd: &Path, base: &str, excludes: &[String], ledger_rel: &Option<St
     })
 }
 
-fn jj_scope(cwd: &Path, excludes: &[String], ledger_rel: &Option<String>) -> Result<Scope, ScopeError> {
+fn jj_scope(
+    cwd: &Path,
+    excludes: &[String],
+    ledger_rel: &Option<String>,
+) -> Result<Scope, ScopeError> {
     // jj diff --name-only includes modified/added (incl. untracked)/deleted.
     let out = run(Command::new("jj")
         .arg("diff")
         .arg("--name-only")
         .current_dir(cwd))?;
     let mut files: Vec<String> = Vec::new();
-    for p in out.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()) {
+    for p in out
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+    {
         if !is_excluded(&p, excludes) && !is_ledger(&p, ledger_rel) && !is_vcs_meta(&p) {
             files.push(p);
         }
@@ -333,7 +346,10 @@ mod tests {
 
     #[test]
     fn nul_paths_basic() {
-        assert_eq!(nul_paths("a.rs\0b.rs\0"), vec!["a.rs".to_string(), "b.rs".to_string()]);
+        assert_eq!(
+            nul_paths("a.rs\0b.rs\0"),
+            vec!["a.rs".to_string(), "b.rs".to_string()]
+        );
         assert!(nul_paths("").is_empty());
     }
 }

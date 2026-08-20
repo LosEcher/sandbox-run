@@ -16,8 +16,7 @@ use sha2::{Digest, Sha256};
 pub fn g0_check(before: &str, after: &str, cleaned: bool, clean_detail: &str) -> GateResult {
     let pass = before == after && cleaned;
     let detail = if before != after {
-        "main tree VCS state changed during the run (isolation violated)"
-            .to_string()
+        "main tree VCS state changed during the run (isolation violated)".to_string()
     } else if !cleaned {
         clean_detail.to_string()
     } else {
@@ -44,7 +43,11 @@ pub fn g1_check(polluted_paths: &[String], policy: &str) -> GateResult {
         format!(
             "{} file(s) modified by verify (pollution{}): {}",
             n,
-            if policy == "warn" { ", warn policy" } else { ", denied" },
+            if policy == "warn" {
+                ", warn policy"
+            } else {
+                ", denied"
+            },
             polluted_paths.join(", ")
         )
     };

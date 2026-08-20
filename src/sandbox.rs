@@ -96,7 +96,11 @@ pub fn setup(vcs: Vcs, base: &str, run_id: &str, cwd: &Path) -> Result<Sandbox, 
             let wc_change = if wc.status.success() {
                 let s = String::from_utf8_lossy(&wc.stdout);
                 let id = s.trim().to_string();
-                if id.is_empty() { None } else { Some(id) }
+                if id.is_empty() {
+                    None
+                } else {
+                    Some(id)
+                }
             } else {
                 None
             };
@@ -170,7 +174,10 @@ pub fn cleanup(s: &Sandbox, cwd: &Path) -> (bool, String) {
             if let Ok(out) = list {
                 let text = String::from_utf8_lossy(&out.stdout);
                 let path_str = s.dir.to_string_lossy();
-                if text.lines().any(|l| l.trim().starts_with(path_str.as_ref())) {
+                if text
+                    .lines()
+                    .any(|l| l.trim().starts_with(path_str.as_ref()))
+                {
                     issues.push("worktree still registered in `git worktree list`".to_string());
                 }
             }
@@ -219,7 +226,10 @@ pub fn cleanup(s: &Sandbox, cwd: &Path) -> (bool, String) {
     }
     let cleaned = issues.is_empty();
     let detail = if cleaned {
-        format!("sandbox {} cleaned (dir removed, no VCS registration)", s.backend)
+        format!(
+            "sandbox {} cleaned (dir removed, no VCS registration)",
+            s.backend
+        )
     } else {
         format!("sandbox cleanup incomplete: {}", issues.join("; "))
     };

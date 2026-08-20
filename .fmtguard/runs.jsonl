@@ -1,0 +1,2 @@
+{"t":"run_start","run_id":"run-1787233577079-0","version":"0.2.0","cwd":"/Users/echerlos/syncthing/project/dsfolder/sandbox-run","base":"HEAD","vcs":"git","source":"git-diff","rustfmt":"rustfmt","toolchain":"rustfmt 1.9.0-stable (2d8144b788 2026-07-07)","dry_run":true}
+{"t":"scope_detect","source":"git-diff","files":[],"excluded":[]}

@@ -42,8 +42,9 @@ pub fn apply(entries: &[SyncEntry], main: &Path, sandbox: &Path) -> Result<usize
             SyncKind::Copy => {
                 let src = main.join(&e.path);
                 if let Some(parent) = dst.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|err| format!("sync: cannot create {}: {err}", parent.display()))?;
+                    std::fs::create_dir_all(parent).map_err(|err| {
+                        format!("sync: cannot create {}: {err}", parent.display())
+                    })?;
                 }
                 std::fs::copy(&src, &dst)
                     .map_err(|err| format!("sync: cannot copy {}: {err}", src.display()))?;

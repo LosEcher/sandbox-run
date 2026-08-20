@@ -99,7 +99,8 @@ pub fn append(log_path: Option<&Path>, event: &Event<'_>) -> std::io::Result<()>
         let _ = std::fs::create_dir_all(parent);
     }
     let mut f = OpenOptions::new().create(true).append(true).open(path)?;
-    let mut line = serde_json::to_string(event).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let mut line =
+        serde_json::to_string(event).map_err(|e| std::io::Error::other(e.to_string()))?;
     line.push('\n');
     f.write_all(line.as_bytes())?;
     f.flush()

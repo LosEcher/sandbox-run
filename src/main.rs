@@ -92,7 +92,10 @@ impl Default for Config {
             timeout_secs: 120,
             env: Vec::new(),
             pollution: "deny".to_string(),
-            excludes: scope::DEFAULT_EXCLUDES.iter().map(|s| s.to_string()).collect(),
+            excludes: scope::DEFAULT_EXCLUDES
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             log: Some(PathBuf::from(".sandbox-run/runs.jsonl")),
             verify_cmd: Vec::new(),
         }
@@ -109,7 +112,8 @@ fn take_value<'a>(
 }
 
 fn parse_u64(v: &str, flag: &str) -> Result<u64, String> {
-    v.parse::<u64>().map_err(|_| format!("invalid number for {flag}: {v}"))
+    v.parse::<u64>()
+        .map_err(|_| format!("invalid number for {flag}: {v}"))
 }
 
 fn parse_args(args: &[String]) -> Result<Config, String> {
@@ -137,8 +141,12 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                 cfg.base = take_value(&mut it, "--base")?;
                 cfg.base_explicit = true;
             }
-            "--changeset" => cfg.changeset = Some(PathBuf::from(take_value(&mut it, "--changeset")?)),
-            "--timeout" => cfg.timeout_secs = parse_u64(&take_value(&mut it, "--timeout")?, "--timeout")?,
+            "--changeset" => {
+                cfg.changeset = Some(PathBuf::from(take_value(&mut it, "--changeset")?))
+            }
+            "--timeout" => {
+                cfg.timeout_secs = parse_u64(&take_value(&mut it, "--timeout")?, "--timeout")?
+            }
             "--env" => {
                 let kv = take_value(&mut it, "--env")?;
                 let (k, v) = kv
@@ -159,7 +167,9 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             "--exclude" => {
                 let v = take_value(&mut it, "--exclude")?;
                 cfg.excludes.extend(
-                    v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+                    v.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
                 );
             }
             "--emit" => {
@@ -181,7 +191,8 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     }
     if cfg.verify_cmd.is_empty() {
         return Err(
-            "missing verify command (use: sandbox-run [OPTIONS] -- <verify-command...>)".to_string(),
+            "missing verify command (use: sandbox-run [OPTIONS] -- <verify-command...>)"
+                .to_string(),
         );
     }
     Ok(cfg)
@@ -254,7 +265,8 @@ fn run(cfg: &Config, cwd: &Path) -> Result<i32, String> {
             .map_err(|e| format!("cannot read changeset {}: {e}", cs_path.display()))?;
         let cs: ChangeSet =
             serde_json::from_str(&text).map_err(|e| format!("invalid changeset: {e}"))?;
-        scope::scope_from_changeset(cwd, &cs, &cfg.excludes, &ledger_rel).map_err(|e| e.to_string())?
+        scope::scope_from_changeset(cwd, &cs, &cfg.excludes, &ledger_rel)
+            .map_err(|e| e.to_string())?
     } else {
         let vcs = cfg.vcs.or_else(|| scope::detect_vcs(cwd));
         let v = vcs.ok_or_else(|| scope::ScopeError::NotARepository.to_string())?;
@@ -545,7 +557,8 @@ fn run_log(args: &[String]) -> Result<i32, String> {
             }
         }
     }
-    let run_id = run_id.ok_or_else(|| "missing <runId> (find ids via `sandbox-run status`)".to_string())?;
+    let run_id =
+        run_id.ok_or_else(|| "missing <runId> (find ids via `sandbox-run status`)".to_string())?;
     let runs = report::read_runs(&log).map_err(|e| e.to_string())?;
     let run = report::find_run(&runs, &run_id)
         .ok_or_else(|| format!("no run with id {run_id} in the log"))?;
@@ -616,8 +629,12 @@ mod tests {
 
     #[test]
     fn parse_args_positional_cmd() {
-        let cfg = parse_args(&["cargo".to_string(), "test".to_string(), "--no-run".to_string()])
-            .unwrap();
+        let cfg = parse_args(&[
+            "cargo".to_string(),
+            "test".to_string(),
+            "--no-run".to_string(),
+        ])
+        .unwrap();
         assert_eq!(cfg.verify_cmd, vec!["cargo", "test", "--no-run"]);
     }
 
@@ -634,7 +651,10 @@ mod tests {
             "true".to_string(),
         ])
         .unwrap();
-        assert_eq!(cfg.env, vec![("RUST_BACKTRACE".to_string(), "1".to_string())]);
+        assert_eq!(
+            cfg.env,
+            vec![("RUST_BACKTRACE".to_string(), "1".to_string())]
+        );
         assert_eq!(cfg.pollution, "warn");
     }
 
@@ -642,9 +662,27 @@ mod tests {
     fn parse_args_rejects() {
         assert!(parse_args(&[]).is_err());
         assert!(parse_args(&["--nope".to_string(), "x".to_string()]).is_err());
-        assert!(parse_args(&["--pollution".to_string(), "maybe".to_string(), "--".to_string(), "x".to_string()]).is_err());
-        assert!(parse_args(&["--env".to_string(), "NOEQ".to_string(), "--".to_string(), "x".to_string()]).is_err());
-        assert!(parse_args(&["--emit".to_string(), "yaml".to_string(), "--".to_string(), "x".to_string()]).is_err());
+        assert!(parse_args(&[
+            "--pollution".to_string(),
+            "maybe".to_string(),
+            "--".to_string(),
+            "x".to_string()
+        ])
+        .is_err());
+        assert!(parse_args(&[
+            "--env".to_string(),
+            "NOEQ".to_string(),
+            "--".to_string(),
+            "x".to_string()
+        ])
+        .is_err());
+        assert!(parse_args(&[
+            "--emit".to_string(),
+            "yaml".to_string(),
+            "--".to_string(),
+            "x".to_string()
+        ])
+        .is_err());
     }
 
     #[test]

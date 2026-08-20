@@ -180,7 +180,11 @@ pub fn render_log(run: &RunSummary) -> String {
         format_duration(run.duration_ms),
         exit,
         truncated,
-        if run.completed() { "completed" } else { "dangling start (repaired: interrupted)" }
+        if run.completed() {
+            "completed"
+        } else {
+            "dangling start (repaired: interrupted)"
+        }
     ));
     out
 }
