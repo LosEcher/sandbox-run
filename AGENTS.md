@@ -6,7 +6,8 @@
 
 - `sandbox-run`：变更隔离验证执行内核（ChangeSet → Sandbox → RunReport）。
 - 纯 Rust（edition 2021），单二进制；`src/` 为模块 + `src/main.rs`。
-- 测试：`cargo test`（单元）+ `bash test/gates.sh`（7 条机械验收门禁，git+jj）。
+- 测试：`cargo test`（单元）+ `bash test/gates.sh`（7 条机械验收门禁，git+jj）
+  + `bash test/docker-gates.sh`（docker 后端门禁，无 docker 时 graceful skip）。
 
 ## 提交前：Rust 格式化门禁（必须）
 
@@ -43,5 +44,10 @@ cargo fmt --check                       # 红 = scope 外有格式债，整文�
 - 验证命令 = argv 直接 spawn（不经 shell）；管道请显式 `sh -c '...'`。
 - jj 后端（workspace add/forget/abandon）：op log 增长是已记录的可接受成本；
   change id 跨 snapshot 稳定，cleanup 用 add 时记录的 id abandon 孤儿。
-- 改 `src/` 前先想清楚它属于哪一层（scope/sync/sandbox/exec/gates/events/report），
-  保持单二进制、零 daemon、零外部依赖（git/jj 二进制除外）。
+- docker 后端（`--backend docker`，`src/docker.rs`）：可选外部依赖 = docker CLI/daemon
+  （仅显式选择时使用；auto→worktree 不变）。容器为命名持久资源（ownership + schema +
+  host-sha256 指纹，不匹配 → rm --force 重建）；`~/.cache/sandbox-run/workspace` 是
+  bind mount 源，inode 必须稳定（只清内容不删目录）；docker 后端单并发（第二个并发
+  run 会损坏共享 workspace）。
+- 改 `src/` 前先想清楚它属于哪一层（scope/sync/sandbox/exec/gates/events/report/docker），
+  保持单二进制、零 daemon、零外部依赖（git/jj/docker 二进制除外）。

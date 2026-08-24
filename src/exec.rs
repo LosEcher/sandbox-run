@@ -150,7 +150,7 @@ fn spawn_argv(program: &str, args: &[String], spec: &ExecSpec) -> Result<Child, 
 
 /// Read a stream to EOF keeping only the tail `max` bytes (drains the rest so
 /// the child never blocks on a full pipe).
-fn read_tail<R: Read>(mut reader: R, max: usize) -> (Vec<u8>, bool) {
+pub(crate) fn read_tail<R: Read>(mut reader: R, max: usize) -> (Vec<u8>, bool) {
     let mut tail: Vec<u8> = Vec::with_capacity(max.saturating_add(8192));
     let mut total = 0usize;
     let mut chunk = [0u8; 8192];
@@ -171,7 +171,7 @@ fn read_tail<R: Read>(mut reader: R, max: usize) -> (Vec<u8>, bool) {
     (tail, total > max)
 }
 
-fn join_capture(h: Option<thread::JoinHandle<(Vec<u8>, bool)>>) -> (Vec<u8>, bool) {
+pub(crate) fn join_capture(h: Option<thread::JoinHandle<(Vec<u8>, bool)>>) -> (Vec<u8>, bool) {
     match h {
         Some(j) => j.join().unwrap_or((Vec::new(), false)),
         None => (Vec::new(), false),

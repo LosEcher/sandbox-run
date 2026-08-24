@@ -105,7 +105,7 @@ impl VerifyResult {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxInfo {
-    /// "worktree" | "workspace" | "none"
+    /// "worktree" | "workspace" | "docker" | "none"
     pub backend: String,
     pub base: String,
     pub overlaid_files: usize,

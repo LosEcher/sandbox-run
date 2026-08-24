@@ -86,7 +86,7 @@ fn run(cmd: &mut Command) -> Result<String, ScopeError> {
 }
 
 /// NUL-separated git output (`-z`) → list of paths (drop empty trailing).
-fn nul_paths(out: &str) -> Vec<String> {
+pub(crate) fn nul_paths(out: &str) -> Vec<String> {
     out.split('\0')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -235,7 +235,7 @@ pub fn scope_from_changeset(
 /// is allowed to write in the main tree). The whole parent dir is excluded
 /// (e.g. `.sandbox-run/`), so `git status` never reports the ledger itself as
 /// pollution of the main tree.
-fn is_ledger(path: &str, ledger_rel: &Option<String>) -> bool {
+pub(crate) fn is_ledger(path: &str, ledger_rel: &Option<String>) -> bool {
     let Some(rel) = ledger_rel else {
         return false;
     };

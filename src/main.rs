@@ -8,6 +8,7 @@
 //! Exit codes: 0 pass · 1 fail/timeout/polluted/rejected · 2 error (usage,
 //! VCS, sandbox setup, G0 isolation violation).
 
+mod docker;
 mod events;
 mod exec;
 mod gates;
@@ -49,6 +50,14 @@ OPTIONS:
   --exclude <glob,...>        extra exclusion globs (defaults: target/**,
                               node_modules/**, dist/**, .venv/**, __pycache__/**,
                               .pytest_cache/**)
+  --backend <auto|worktree|docker>
+                              sandbox backend (default auto → worktree).
+                              docker runs the verify inside a container and
+                              requires a working docker daemon
+  --docker-image <name>       image for --backend docker (default ubuntu:24.04;
+                              pick one with your toolchain, e.g. node:22)
+  --docker-mount-auth         read-only mount ~/.codex and ~/.claude into the
+                              container (default: not mounted)
   --emit json                 machine output (default json)
   --log <path>                event log (default .sandbox-run/runs.jsonl)
   --no-log                    disable the event log
@@ -66,7 +75,45 @@ EXIT CODES: 0 pass · 1 fail/timeout/polluted/rejected · 2 error.
 
 CHANGESET (explicit scope; caller decides, detection skipped):
   { \"base_ref\": \"HEAD\", \"files\": [\"src/lib.rs\", \"test/\"] }
+
+DOCKER BACKEND (--backend docker):
+  The verify command runs inside a container; the host orchestrates and
+  retrieves the result. The sandbox-run binary is staged content-addressed
+  (~/.cache/sandbox-run/runtime/<sha256>/, read-only mounted) and the host
+  working state is copied into the container workspace. The container is a
+  named, labeled resource (com.losecher.sandbox-run=1): an unowned container
+  with the same name is refused, and a fingerprint mismatch (binary/image/
+  schema/mount-auth change) recreates it via `docker rm --force`. The host
+  copy is mounted read-only at /host inside the container — container writes
+  to host paths are rejected (G0). Timeout kills the whole container.
 ";
+
+/// Sandbox backend selection. `auto` resolves to the VCS-native backend
+/// (git worktree / jj workspace); `docker` requires a working docker daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Backend {
+    Auto,
+    Worktree,
+    Docker,
+}
+
+impl Backend {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Backend::Auto => "auto",
+            Backend::Worktree => "worktree",
+            Backend::Docker => "docker",
+        }
+    }
+
+    /// Resolve `auto` → the default (worktree). Docker stays explicit.
+    fn effective(self) -> Backend {
+        match self {
+            Backend::Auto => Backend::Worktree,
+            b => b,
+        }
+    }
+}
 
 #[derive(Debug)]
 struct Config {
@@ -80,6 +127,9 @@ struct Config {
     excludes: Vec<String>,
     log: Option<PathBuf>,
     verify_cmd: Vec<String>,
+    backend: Backend,
+    docker_image: String,
+    docker_mount_auth: bool,
 }
 
 impl Default for Config {
@@ -98,6 +148,9 @@ impl Default for Config {
                 .collect(),
             log: Some(PathBuf::from(".sandbox-run/runs.jsonl")),
             verify_cmd: Vec::new(),
+            backend: Backend::Auto,
+            docker_image: docker::DEFAULT_IMAGE.to_string(),
+            docker_mount_auth: false,
         }
     }
 }
@@ -164,6 +217,23 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                 }
                 cfg.pollution = v;
             }
+            "--backend" => {
+                let v = take_value(&mut it, "--backend")?;
+                cfg.backend = match v.as_str() {
+                    "auto" => Backend::Auto,
+                    "worktree" => Backend::Worktree,
+                    "docker" => Backend::Docker,
+                    other => {
+                        return Err(format!(
+                            "--backend expects auto|worktree|docker, got: {other}"
+                        ))
+                    }
+                };
+            }
+            "--docker-image" => {
+                cfg.docker_image = take_value(&mut it, "--docker-image")?;
+            }
+            "--docker-mount-auth" => cfg.docker_mount_auth = true,
             "--exclude" => {
                 let v = take_value(&mut it, "--exclude")?;
                 cfg.excludes.extend(
@@ -194,6 +264,11 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             "missing verify command (use: sandbox-run [OPTIONS] -- <verify-command...>)"
                 .to_string(),
         );
+    }
+    if cfg.backend != Backend::Docker
+        && (cfg.docker_mount_auth || cfg.docker_image != docker::DEFAULT_IMAGE)
+    {
+        return Err("--docker-image / --docker-mount-auth require --backend docker".to_string());
     }
     Ok(cfg)
 }
@@ -241,6 +316,9 @@ fn config_hash(cfg: &Config, scope: &Scope) -> String {
         "log": cfg.log.as_ref().map(|p| p.display().to_string()),
         "cmd": cfg.verify_cmd,
         "env_keys": cfg.env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+        "backend": cfg.backend.effective().as_str(),
+        "docker_image": cfg.docker_image,
+        "docker_mount_auth": cfg.docker_mount_auth,
     });
     gates::sha256_hex(&j.to_string())
 }
@@ -343,8 +421,113 @@ fn run(cfg: &Config, cwd: &Path) -> Result<i32, String> {
     // ---- G0 before (isolation baseline) --------------------------------
     let g0_before = main_state(vcs, cwd, &ledger_rel)?;
 
-    // ---- L2: sandbox setup ----------------------------------------------
-    let sb = sandbox::setup(vcs, &scope.base, &run_id, cwd)?;
+    // ---- L2: sandbox + verify + pollution --------------------------------
+    let body: docker::BodyResult = match cfg.backend.effective() {
+        Backend::Docker => {
+            let run = docker::DockerRun {
+                opts: &docker::DockerOptions {
+                    image: cfg.docker_image.clone(),
+                    mount_auth: cfg.docker_mount_auth,
+                    env: cfg.env.clone(),
+                    timeout: Duration::from_secs(cfg.timeout_secs),
+                    excludes: cfg.excludes.clone(),
+                    verify_cmd: cfg.verify_cmd.clone(),
+                },
+                scope: &scope,
+                vcs,
+                cwd,
+                log,
+                ledger_rel: &ledger_rel,
+            };
+            docker::run_body(&run)
+        }
+        Backend::Worktree => run_vcs_body(cfg, &scope, vcs, cwd, log, &run_id),
+        Backend::Auto => unreachable!("auto resolved before dispatch"),
+    };
+
+    let (verify, pollution, overlaid, cleaned, clean_detail, backend) = match body {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("sandbox-run: error: {e}");
+            return Ok(2);
+        }
+    };
+
+    // ---- L3: gates ------------------------------------------------------
+    let g1 = gates::g1_check(&pollution, &cfg.pollution);
+    let verdict = gates::classify(&verify, pollution.len(), &cfg.pollution);
+    let g0_after = main_state(vcs, cwd, &ledger_rel)?;
+    let g0 = gates::g0_check(&g0_before, &g0_after, cleaned, &clean_detail);
+
+    for g in [&g0, &g1] {
+        events::append(
+            log,
+            &Event::GateCheck {
+                gate: &g.gate,
+                pass: g.pass,
+                metric: g.metric,
+                limit: g.limit,
+                actual: g.actual,
+                detail: &g.detail,
+            },
+        )
+        .map_err(|e| format!("cannot write event log: {e}"))?;
+    }
+
+    let mut verify_with_cmd = verify.clone();
+    verify_with_cmd.cmd = cfg.verify_cmd.clone();
+
+    let sandbox_info = SandboxInfo {
+        backend: backend.to_string(),
+        base: scope.base.clone(),
+        overlaid_files: overlaid,
+        cleaned,
+        detail: Some(clean_detail.clone()),
+    };
+    let report = report::build_report(
+        run_id.clone(),
+        verdict.as_str(),
+        &scope,
+        sandbox_info,
+        &verify_with_cmd,
+        &[g0.clone(), g1.clone()],
+        log_path_str.clone(),
+    );
+    events::append(
+        log,
+        &Event::ReportEmit {
+            verdict: verdict.as_str(),
+            duration_ms: verify.duration_ms,
+            output_path: log_path_str.as_deref(),
+        },
+    )
+    .map_err(|e| format!("cannot write event log: {e}"))?;
+
+    emit_report(&report);
+    emit_human_summary(&report, &g0, &g1);
+
+    // G0 is a hard gate: a violation is a bug → exit 2 regardless of verdict.
+    if !g0.pass {
+        return Ok(2);
+    }
+    Ok(match verdict {
+        Verdict::Pass => 0,
+        _ => 1,
+    })
+}
+
+/// VCS-native body (git worktree / jj workspace): setup → overlay → baseline
+/// → verify → pollution, with cleanup on every exit path.
+fn run_vcs_body(
+    cfg: &Config,
+    scope: &Scope,
+    vcs: Vcs,
+    cwd: &Path,
+    log: Option<&Path>,
+    run_id: &str,
+) -> docker::BodyResult {
+    let sb = sandbox::setup(vcs, &scope.base, run_id, cwd)?;
+    let backend = sb.backend;
 
     let outcome = (|| -> Result<(VerifyResult, Vec<String>, usize), String> {
         // overlay the working state into the sandbox
@@ -415,75 +598,12 @@ fn run(cfg: &Config, cwd: &Path) -> Result<i32, String> {
     // cleanup on every exit path (residual sandbox is a bug, G0)
     let (cleaned, clean_detail) = sandbox::cleanup(&sb, cwd);
 
-    let (verify, pollution, overlaid) = match outcome {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("sandbox-run: error: {e}");
-            return Ok(2);
+    match outcome {
+        Ok((verify, pollution, overlaid)) => {
+            Ok((verify, pollution, overlaid, cleaned, clean_detail, backend))
         }
-    };
-
-    // ---- L3: gates ------------------------------------------------------
-    let g1 = gates::g1_check(&pollution, &cfg.pollution);
-    let verdict = gates::classify(&verify, pollution.len(), &cfg.pollution);
-    let g0_after = main_state(vcs, cwd, &ledger_rel)?;
-    let g0 = gates::g0_check(&g0_before, &g0_after, cleaned, &clean_detail);
-
-    for g in [&g0, &g1] {
-        events::append(
-            log,
-            &Event::GateCheck {
-                gate: &g.gate,
-                pass: g.pass,
-                metric: g.metric,
-                limit: g.limit,
-                actual: g.actual,
-                detail: &g.detail,
-            },
-        )
-        .map_err(|e| format!("cannot write event log: {e}"))?;
+        Err(e) => Err(e),
     }
-
-    let mut verify_with_cmd = verify.clone();
-    verify_with_cmd.cmd = cfg.verify_cmd.clone();
-
-    let sandbox_info = SandboxInfo {
-        backend: sb.backend.to_string(),
-        base: scope.base.clone(),
-        overlaid_files: overlaid,
-        cleaned,
-        detail: Some(clean_detail.clone()),
-    };
-    let report = report::build_report(
-        run_id.clone(),
-        verdict.as_str(),
-        &scope,
-        sandbox_info,
-        &verify_with_cmd,
-        &[g0.clone(), g1.clone()],
-        log_path_str.clone(),
-    );
-    events::append(
-        log,
-        &Event::ReportEmit {
-            verdict: verdict.as_str(),
-            duration_ms: verify.duration_ms,
-            output_path: log_path_str.as_deref(),
-        },
-    )
-    .map_err(|e| format!("cannot write event log: {e}"))?;
-
-    emit_report(&report);
-    emit_human_summary(&report, &g0, &g1);
-
-    // G0 is a hard gate: a violation is a bug → exit 2 regardless of verdict.
-    if !g0.pass {
-        return Ok(2);
-    }
-    Ok(match verdict {
-        Verdict::Pass => 0,
-        _ => 1,
-    })
 }
 
 fn emit_report(report: &types::RunReport) {
@@ -683,6 +803,79 @@ mod tests {
             "x".to_string()
         ])
         .is_err());
+    }
+
+    #[test]
+    fn parse_args_backend_variants() {
+        let cfg = parse_args(&[
+            "--backend".to_string(),
+            "docker".to_string(),
+            "--docker-image".to_string(),
+            "node:22".to_string(),
+            "--docker-mount-auth".to_string(),
+            "--".to_string(),
+            "true".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(cfg.backend, Backend::Docker);
+        assert_eq!(cfg.docker_image, "node:22");
+        assert!(cfg.docker_mount_auth);
+
+        let cfg = parse_args(&[
+            "--backend".to_string(),
+            "worktree".to_string(),
+            "--".to_string(),
+            "true".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(cfg.backend, Backend::Worktree);
+
+        let cfg = parse_args(&["--".to_string(), "true".to_string()]).unwrap();
+        assert_eq!(cfg.backend, Backend::Auto);
+        assert_eq!(cfg.docker_image, docker::DEFAULT_IMAGE);
+        assert!(!cfg.docker_mount_auth);
+
+        assert!(parse_args(&[
+            "--backend".to_string(),
+            "podman".to_string(),
+            "--".to_string(),
+            "true".to_string()
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn parse_args_docker_flags_require_docker_backend() {
+        // docker flags without --backend docker → fail-closed
+        assert!(parse_args(&[
+            "--docker-image".to_string(),
+            "node:22".to_string(),
+            "--".to_string(),
+            "true".to_string()
+        ])
+        .is_err());
+        assert!(parse_args(&[
+            "--docker-mount-auth".to_string(),
+            "--".to_string(),
+            "true".to_string()
+        ])
+        .is_err());
+        // default image with --backend docker → ok
+        assert!(parse_args(&[
+            "--backend".to_string(),
+            "docker".to_string(),
+            "--".to_string(),
+            "true".to_string()
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn backend_effective_resolution() {
+        assert_eq!(Backend::Auto.effective(), Backend::Worktree);
+        assert_eq!(Backend::Worktree.effective(), Backend::Worktree);
+        assert_eq!(Backend::Docker.effective(), Backend::Docker);
+        assert_eq!(Backend::Docker.as_str(), "docker");
     }
 
     #[test]

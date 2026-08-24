@@ -57,6 +57,13 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: bash test/gates.sh
+      # Docker backend gates: run for real where a docker daemon exists
+      # (ubuntu-latest has one), skip gracefully elsewhere (CI does not
+      # install docker; the script exits 0 with a note when docker is absent).
+      - name: Docker backend gates
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash test/docker-gates.sh
 
   # Release assets follow the fixed `sandbox-run-<os>-<arch>` naming contract
   # (consumers resolve the right file deterministically; each matrix row builds

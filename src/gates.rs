@@ -173,10 +173,11 @@ pub fn git_pollution(sandbox_dir: &Path, excludes: &[String]) -> Result<Vec<Stri
     Ok(polluted)
 }
 
-/// G1 jj backend: hash-snapshot the sandbox tree (skip .jj + excluded dirs)
-/// before and after verify; changed/missing/new files outside excluded dirs
-/// are pollution.
-pub fn jj_pollution(
+/// G1 backend-agnostic pollution: hash-snapshot the sandbox tree (skip VCS
+/// metadata + excluded dirs) before and after verify; changed/missing/new
+/// files outside excluded dirs are pollution. Used by the jj backend and the
+/// docker backend (which has no VCS checkout inside the sandbox to diff).
+pub fn tree_pollution(
     sandbox_dir: &Path,
     excludes: &[String],
     baseline: &std::collections::BTreeMap<String, [u8; 32]>,
@@ -200,6 +201,15 @@ pub fn jj_pollution(
     }
     polluted.sort();
     Ok(polluted)
+}
+
+/// G1 jj backend: alias of the generic tree-snapshot pollution check.
+pub fn jj_pollution(
+    sandbox_dir: &Path,
+    excludes: &[String],
+    baseline: &std::collections::BTreeMap<String, [u8; 32]>,
+) -> Result<Vec<String>, String> {
+    tree_pollution(sandbox_dir, excludes, baseline)
 }
 
 /// Hash every file under `root` (excluding VCS metadata and excluded dirs).
@@ -260,9 +270,14 @@ fn walk(
 
 /// sha256 hex of a string (used for config hash + G0 display).
 pub fn sha256_hex(s: &str) -> String {
+    sha256_hex_bytes(s.as_bytes())
+}
+
+/// sha256 hex of raw bytes (content addressing for the staged runtime).
+pub fn sha256_hex_bytes(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    h.update(s.as_bytes());
+    h.update(bytes);
     let d = h.finalize();
     let mut out = String::with_capacity(64);
     for b in d {

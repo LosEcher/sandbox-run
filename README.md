@@ -82,10 +82,47 @@ sandbox-run [OPTIONS] -- <verify-command...>
 | `--env K=V` | — | extra env for the verify command (repeatable) |
 | `--pollution <deny\|warn>` | `deny` | G1 policy |
 | `--exclude <glob,...>` | cache dirs | extra exclusion globs |
+| `--backend <auto\|worktree\|docker>` | `auto` | sandbox backend; `auto` → worktree, `docker` runs the verify inside a container (requires a docker daemon) |
+| `--docker-image <name>` | `ubuntu:24.04` | image for `--backend docker`; pick one with your toolchain (e.g. `node:22`) |
+| `--docker-mount-auth` | off | read-only mount `~/.codex` and `~/.claude` into the container |
 | `--log <path>` / `--no-log` | `.sandbox-run/runs.jsonl` | event ledger |
 
 Exit codes: `0` pass · `1` fail/timeout/polluted/rejected · `2` error
 (usage / not a repo / sandbox setup / isolation violation).
+
+### Docker backend (`--backend docker`)
+
+Runs the verify command inside a container; the host orchestrates and
+retrieves the result (no in-container gateway daemon):
+
+- **Content-addressed runtime**: the `sandbox-run` binary is staged to
+  `~/.cache/sandbox-run/runtime/<sha256>/` (existing bytes verified against the
+  live binary, rewritten atomically if tampered) and mounted into the
+  container **read-only** at `/usr/local/bin/sandbox-run`.
+- **Named labeled container** (`sandbox-run`): labels
+  `com.losecher.sandbox-run=1` (ownership),
+  `com.losecher.sandbox-run.schema-version` and
+  `com.losecher.sandbox-run.host-sha256` (fingerprint). A fingerprint mismatch
+  (binary / image / schema / mount-auth change) recreates the container via
+  `docker rm --force`; an **unowned** container with the same name is refused
+  (exit 2).
+- **G0**: the host's working-state copy is mounted read-only at `/host` —
+  container writes to host paths are rejected (`Read-only file system`). The
+  writable container workspace is `/workspace`.
+- **Execution**: the working state is copied into `/workspace`, the verify
+  command runs via `docker exec` (exit code propagates), on timeout the whole
+  container is killed (`docker kill` = whole-tree kill), and the workspace
+  changes are retrieved with `docker cp` for G1 pollution detection.
+- The container is kept between runs while the fingerprint matches, so docker
+  backend runs are **serialized** (a second concurrent run fails loudly).
+
+```sh
+# verify against a Node toolchain inside a container
+sandbox-run --backend docker --docker-image node:22 -- npm test
+
+# mount codex/claude auth read-only into the container
+sandbox-run --backend docker --docker-mount-auth -- cargo test --no-run
+```
 
 ### Examples
 
@@ -134,12 +171,16 @@ sandbox-run log <runId>
   point). `--exclude` cannot re-include them in P0.
 - jj is a first-class backend (workspace add / forget / abandon, orphan change
   cleanup; op-log growth is a documented accepted cost).
+- The docker backend materializes the full working state (all non-ignored
+  files) into the container, since there is no VCS checkout inside the
+  container to reconstruct the base from — gitignored files are never copied.
 
 ## Development
 
 ```sh
-cargo test          # unit tests
-bash test/gates.sh  # 7 mechanical acceptance gates (git + jj)
+cargo test              # unit tests
+bash test/gates.sh      # 7 mechanical acceptance gates (git + jj)
+bash test/docker-gates.sh  # docker backend gates (skipped when docker is absent)
 ```
 
 ## License
