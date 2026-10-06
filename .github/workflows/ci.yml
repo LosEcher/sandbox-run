@@ -27,6 +27,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # Without this every run recompiles the whole dependency graph on all three
+      # platforms. Keyed on the toolchain plus Cargo.lock, prunes stale artifacts,
+      # and keeps the saving even when a gate fails (`cache-on-failure`).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Install jj (jj gates in gates.sh)
         if: matrix.install-jj == 'true' && runner.os == 'Linux'
         run: |
@@ -101,6 +107,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          # `--target <triple>` writes under target/<triple>, so the key must include
+          # the triple or the release rows would share a single entry.
+          key: ${{ matrix.target }}
       - name: Build dist binary (${{ matrix.target }})
         # Shipped assets come from the `dist` profile, where the size knobs live.
         # The test matrix above keeps plain `--release` for its compile check, and
