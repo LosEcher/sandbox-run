@@ -729,10 +729,19 @@ mod tests {
         // own pid is alive → a second acquire fails loudly
         let err = acquire_lock_at(&tmp).unwrap_err();
         assert!(err.contains("in progress"), "err: {err}");
-        // a stale lock (dead pid) is reclaimed
+        // A stale lock (dead pid) is reclaimed only where a liveness probe exists.
         std::fs::write(tmp.join("docker.lock"), "99999999").unwrap();
+        #[cfg(not(windows))]
         acquire_lock_at(&tmp).unwrap();
-        std::fs::remove_dir_all(&tmp).unwrap();
+        // Windows has no process-alive probe (`lock_owner_alive` is fail-closed there), so
+        // a stale lock reads as live and needs manual removal. Assert *that* contract on
+        // Windows instead: asserting the unix one makes this test impossible to pass there.
+        #[cfg(windows)]
+        {
+            let err = acquire_lock_at(&tmp).unwrap_err();
+            assert!(err.contains("in progress"), "err: {err}");
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
