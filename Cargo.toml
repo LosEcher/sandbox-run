@@ -17,3 +17,23 @@ sha2 = "0.10"
 [[bin]]
 name = "sandbox-run"
 path = "src/main.rs"
+
+# --- Shipped-artifact size ---------------------------------------------------------------
+# Measured, not guessed: this combination is substantially smaller than the default release
+# profile, while `opt-level = "z"` on its own is *larger* than the default `opt-level = 3`
+# here. Single-knob comparisons mislead; only the measured combination is meaningful.
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+# `strip` removes the symbol table (a real size win for the shipped binary) but also makes
+# `cargo bloat` / `nm` useless. For size analysis, override it for a single build:
+#   cargo build --release --config 'profile.release.strip="none"'
+# `panic = "abort"` is deliberately NOT set: it changes crash behaviour from unwinding
+# (exit 101) to SIGABRT (exit 134), and this tool's exit contract is 0/1/2.
+
+# cargo never reclaims `target/*/incremental`, and it ends up dwarfing the working set it
+# accelerates. Off here; the cost is a few seconds per crate when recompiling.
+[profile.dev]
+incremental = false
