@@ -61,3 +61,10 @@ strip = "symbols"
 # accelerates. Off here; the cost is a few seconds per crate when recompiling.
 [profile.dev]
 incremental = false
+
+[profile.dev.package."*"]
+# deps: no debuginfo (biggest dev-build disk lever; measured 372 -> 225 MB here).
+debug = 0
+# debug = 0 makes cargo pass `-C strip=debuginfo`; Apple strip can break proc-macro
+# dylibs (dlopen: mis-aligned LINKEDIT string pool). Free insurance, no size cost.
+strip = "none"
