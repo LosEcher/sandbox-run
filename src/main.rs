@@ -115,6 +115,95 @@ impl Backend {
     }
 }
 
+/// 后端派发所需的输入。把原本 6 个位置参数收进一个结构体，
+/// 这样**新增后端**与**新增输入**都不必再改派发处的参数列表。
+struct BackendRunContext<'a> {
+    cfg: &'a Config,
+    scope: &'a Scope,
+    vcs: Vcs,
+    cwd: &'a Path,
+    log: Option<&'a Path>,
+    ledger_rel: &'a Option<String>,
+    run_id: &'a str,
+}
+
+/// 一个后端的**全部 CLI 身份与派发入口**。
+///
+/// 存在理由：此前"加一个后端"要改 11 处 —— `enum` 变体、`as_str`、`effective`、
+/// `--backend` 解析、未知值错误信息、§验证谓词、以及派发 `match`。注册表把这些
+/// 收敛到**一行**，且未知值的错误信息由表自动生成（不再手写），
+/// 于是"表里有什么"与"CLI 接受什么"不可能不一致。
+struct BackendSpec {
+    /// `--backend` 接受的字面量。
+    id: &'static str,
+    /// 该后端专属选项的合法性校验（在派发**之前**跑，错误信息立刻可读）。
+    validate: fn(&Config) -> Result<(), String>,
+    /// 执行。**必须**在注册表条目里能拿到输入，故收 `BackendRunContext`。
+    execute: fn(&BackendRunContext<'_>) -> docker::BodyResult,
+}
+
+/// `auto` 解析到的默认后端。**`auto` 本身不是后端**（它是选择规则），
+/// 故**不在**下表里 —— 放进注册表会制造一个永远不该被直接派发的伪后端。
+const AUTO_DEFAULT_BACKEND_ID: &str = "worktree";
+
+/// 已声明的后端。顺序即 `--help` / 未知值错误信息里的列举顺序。
+const BACKEND_SPECS: &[BackendSpec] = &[
+    BackendSpec {
+        id: "worktree",
+        validate: |_cfg| Ok(()),
+        execute: |ctx| worktree_execute(ctx),
+    },
+    BackendSpec {
+        id: "docker",
+        // docker 专属选项出现在别的后端上时立刻报错（原 §验证谓词，语义不变）
+        validate: |cfg| {
+            if cfg.docker_mount_auth || cfg.docker_image != docker::DEFAULT_IMAGE {
+                Err("--docker-image / --docker-mount-auth require --backend docker".to_string())
+            } else {
+                Ok(())
+            }
+        },
+        execute: |ctx| docker_execute(ctx),
+    },
+];
+
+/// 按 id 查注册表。`auto` 先解析为 [`AUTO_DEFAULT_BACKEND_ID`]。
+fn backend_spec(resolved_id: &str) -> Option<&'static BackendSpec> {
+    BACKEND_SPECS.iter().find(|b| b.id == resolved_id)
+}
+
+/// 已声明后端的 id 列表（错误信息用；与 `--backend` 接受什么同源）。
+fn declared_backend_ids() -> String {
+    BACKEND_SPECS.iter().map(|b| b.id).collect::<Vec<_>>().join("|")
+}
+
+/// worktree 后端的执行入口：展平 `BackendRunContext` 后委托既有 `run_vcs_body`。
+/// （保留 `run_vcs_body` 原签名不动，避免把它的 6 个参数也卷进本次改动。）
+fn worktree_execute(ctx: &BackendRunContext<'_>) -> docker::BodyResult {
+    run_vcs_body(ctx.cfg, ctx.scope, ctx.vcs, ctx.cwd, ctx.log, ctx.run_id)
+}
+
+/// docker 后端的执行入口：把 ctx 组装成 `docker::DockerRun` 后委托。
+fn docker_execute(ctx: &BackendRunContext<'_>) -> docker::BodyResult {
+    let opts = docker::DockerOptions {
+        image: ctx.cfg.docker_image.clone(),
+        mount_auth: ctx.cfg.docker_mount_auth,
+        env: ctx.cfg.env.clone(),
+        timeout: Duration::from_secs(ctx.cfg.timeout_secs),
+        excludes: ctx.cfg.excludes.clone(),
+        verify_cmd: ctx.cfg.verify_cmd.clone(),
+    };
+    let run = docker::DockerRun {
+        opts: &opts,
+        scope: ctx.scope,
+        vcs: ctx.vcs,
+        cwd: ctx.cwd,
+        log: ctx.log,
+        ledger_rel: ctx.ledger_rel,
+    };
+    docker::run_body(&run)
+}
+
 #[derive(Debug)]
 struct Config {
     vcs: Option<Vcs>,
@@ -219,16 +308,29 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             }
             "--backend" => {
                 let v = take_value(&mut it, "--backend")?;
-                cfg.backend = match v.as_str() {
-                    "auto" => Backend::Auto,
-                    "worktree" => Backend::Worktree,
-                    "docker" => Backend::Docker,
-                    other => {
-                        return Err(format!(
-                            "--backend expects auto|worktree|docker, got: {other}"
-                        ))
-                    }
-                };
+                // 查表校验（注册表 = CLI 身份的单一真源）；未知值的错误信息**由表生成**，
+                // 于是"表里有什么"与"CLI 接受什么"不可能不一致。
+                // 注意 `auto` 是**选择规则**、单独接受，但它不在 BACKEND_SPECS 里。
+                if v == "auto" {
+                    cfg.backend = Backend::Auto;
+                } else if backend_spec(&v).is_some() {
+                    // 已注册。映射到 enum 变体仅为兼容既有断言（见 backend_effective_resolution）；
+                    // 新增后端时把本 match 换成存 id 字符串即可，派发侧已经是查表。
+                    cfg.backend = match v.as_str() {
+                        "worktree" => Backend::Worktree,
+                        "docker" => Backend::Docker,
+                        other => {
+                            return Err(format!(
+                                "internal: backend '{other}' is registered but has no enum variant"
+                            ))
+                        }
+                    };
+                } else {
+                    return Err(format!(
+                        "--backend expects auto|{}, got: {v}",
+                        declared_backend_ids()
+                    ));
+                }
             }
             "--docker-image" => {
                 cfg.docker_image = take_value(&mut it, "--docker-image")?;
@@ -422,28 +524,30 @@ fn run(cfg: &Config, cwd: &Path) -> Result<i32, String> {
     let g0_before = main_state(vcs, cwd, &ledger_rel)?;
 
     // ---- L2: sandbox + verify + pollution --------------------------------
-    let body: docker::BodyResult = match cfg.backend.effective() {
-        Backend::Docker => {
-            let run = docker::DockerRun {
-                opts: &docker::DockerOptions {
-                    image: cfg.docker_image.clone(),
-                    mount_auth: cfg.docker_mount_auth,
-                    env: cfg.env.clone(),
-                    timeout: Duration::from_secs(cfg.timeout_secs),
-                    excludes: cfg.excludes.clone(),
-                    verify_cmd: cfg.verify_cmd.clone(),
-                },
-                scope: &scope,
-                vcs,
-                cwd,
-                log,
-                ledger_rel: &ledger_rel,
-            };
-            docker::run_body(&run)
+    // 查表派发（注册表见 BACKEND_SPECS）。`auto` 已在 parse 期解析为具体 id，
+    // 故这里拿到的必然是表里的某一项 —— 拿不到就是**装配错误**，显式报错而非 panic。
+    let resolved_backend_id = cfg.backend.effective().as_str();
+    let _ = AUTO_DEFAULT_BACKEND_ID; // 解析期使用；此处保留可见性
+    let spec = match backend_spec(resolved_backend_id) {
+        Some(sp) => sp,
+        None => {
+            return Err(format!(
+                "internal: backend '{resolved_backend_id}' is not registered (declared: {})",
+                declared_backend_ids()
+            ))
         }
-        Backend::Worktree => run_vcs_body(cfg, &scope, vcs, cwd, log, &run_id),
-        Backend::Auto => unreachable!("auto resolved before dispatch"),
     };
+    let ctx = BackendRunContext {
+        cfg,
+        scope: &scope,
+        vcs,
+        cwd,
+        log,
+        ledger_rel: &ledger_rel,
+        run_id: &run_id,
+    };
+    (spec.validate)(cfg)?;
+    let body: docker::BodyResult = (spec.execute)(&ctx);
 
     let (verify, pollution, overlaid, cleaned, clean_detail, backend) = match body {
         Ok(b) => b,
@@ -876,6 +980,49 @@ mod tests {
         assert_eq!(Backend::Worktree.effective(), Backend::Worktree);
         assert_eq!(Backend::Docker.effective(), Backend::Docker);
         assert_eq!(Backend::Docker.as_str(), "docker");
+    }
+
+    /// ★ 注册表与 CLI 的一致性（本次抽象引入的**新不变量**）。
+    ///
+    /// 存在理由：注册表的价值就是"表里有什么" == "CLI 接受什么"。若二者能漂移，
+    /// 注册表只是把 11 处改动换成 2 处**外加一个静默缺口** —— 那更糟。
+    /// 这条测试把该不变量钉住。
+    #[test]
+    fn backend_registry_covers_cli_and_excludes_auto() {
+        // ① `auto` **不是**后端，不得出现在表里（它是选择规则，由 effective() 解析）
+        assert!(
+            backend_spec("auto").is_none(),
+            "`auto` 是选择规则而非后端，放进注册表会制造一个永远不该被直接派发的伪后端"
+        );
+        // ② `auto` 解析到的默认后端**必须**在表里（否则 parse 期解析到派发期查不到）
+        assert!(
+            backend_spec(AUTO_DEFAULT_BACKEND_ID).is_some(),
+            "AUTO_DEFAULT_BACKEND_ID 必须指向注册表里的一个后端"
+        );
+        // ③ 表里每个 id 都必须能被 CLI 解析出来，且解析结果回指同一个 id
+        for spec in BACKEND_SPECS {
+            let cfg = parse_args(&["--backend".into(), spec.id.into(), "--".into(), "true".into()])
+                .unwrap_or_else(|e| panic!("--backend {} 应当被接受，却被拒: {e}", spec.id));
+            assert_eq!(
+                cfg.backend.effective().as_str(),
+                spec.id,
+                "表里的 id 与解析后的 effective().as_str() 必须一致"
+            );
+        }
+        // ④ 未知值必须被拒，且错误信息**由表生成**（列举全部已声明 id）
+        let err = parse_args(&["--backend".into(), "nope".into(), "--".into(), "true".into()])
+            .expect_err("未知 --backend 必须被拒");
+        assert!(err.contains(&declared_backend_ids()), "错误信息必须由注册表生成: {err}");
+        // ⑤ 后端专属选项的校验属于该后端（docker 专属选项在 worktree 上必须被拒）
+        assert!(
+            parse_args(&[
+                "--backend".into(), "worktree".into(),
+                "--docker-mount-auth".into(),
+                "--".into(), "true".into(),
+            ])
+            .is_err(),
+            "docker 专属选项在 worktree 后端上必须被拒"
+        );
     }
 
     #[test]
