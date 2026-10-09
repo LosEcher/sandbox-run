@@ -7,6 +7,13 @@ license = "MIT"
 repository = "https://github.com/LosEcher/sandbox-run"
 keywords = ["sandbox", "verify", "agent", "worktree", "isolation"]
 categories = ["development-tools", "command-line-utilities"]
+# The published payload should be the tool, not the workshop: the fleet profile
+# scripts, agent instructions, CI config and this repo's own tool ledgers
+# (`.fmtguard/` and `.rustopt/`; rustopt's ledger is 10 KB of run history that
+# `cargo package` picked up until it was listed here) and the local `.DS_Store`
+# that `cargo package` happily picks up from a dirty tree. `test/` stays — the
+# crate is meant to be self-testing.
+exclude = ["scripts/", "AGENTS.md", ".github/", ".fmtguard/", ".rustopt/", ".DS_Store"]
 
 [dependencies]
 libc = "0.2"

@@ -1,3 +1,6 @@
 /target
 .sandbox-run/
 *.log
+.DS_Store
+.fmtguard/
+.rustopt/

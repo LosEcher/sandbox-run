@@ -54,6 +54,21 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Build
         run: cargo build
+      - name: Packaging content gate
+        # The published crate is the tool, not the workshop: `Cargo.toml` excludes
+        # the fleet scripts, agent notes, CI config and this repo's own tool
+        # ledgers. The pattern must list every one of them — `.rustopt/` shipped
+        # unnoticed until it was added here.
+        run: |
+          set -euo pipefail
+          DENY='^(scripts/|AGENTS\.md|\.github/|\.fmtguard/|\.rustopt/|\.DS_Store)'
+          cargo package --list --allow-dirty > /tmp/pkg-list.txt
+          if grep -Eq "$DENY" /tmp/pkg-list.txt; then
+            echo "::error::internal files must not ship in the .crate:"
+            grep -E "$DENY" /tmp/pkg-list.txt
+            exit 1
+          fi
+          echo "packaged $(wc -l < /tmp/pkg-list.txt) files"
       - name: Unit tests
         run: cargo test
       # Full acceptance gates run on unix (git + jj). Windows runs unit
