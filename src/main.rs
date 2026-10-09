@@ -174,7 +174,11 @@ fn backend_spec(resolved_id: &str) -> Option<&'static BackendSpec> {
 
 /// 已声明后端的 id 列表（错误信息用；与 `--backend` 接受什么同源）。
 fn declared_backend_ids() -> String {
-    BACKEND_SPECS.iter().map(|b| b.id).collect::<Vec<_>>().join("|")
+    BACKEND_SPECS
+        .iter()
+        .map(|b| b.id)
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 /// worktree 后端的执行入口：展平 `BackendRunContext` 后委托既有 `run_vcs_body`。
@@ -1001,8 +1005,13 @@ mod tests {
         );
         // ③ 表里每个 id 都必须能被 CLI 解析出来，且解析结果回指同一个 id
         for spec in BACKEND_SPECS {
-            let cfg = parse_args(&["--backend".into(), spec.id.into(), "--".into(), "true".into()])
-                .unwrap_or_else(|e| panic!("--backend {} 应当被接受，却被拒: {e}", spec.id));
+            let cfg = parse_args(&[
+                "--backend".into(),
+                spec.id.into(),
+                "--".into(),
+                "true".into(),
+            ])
+            .unwrap_or_else(|e| panic!("--backend {} 应当被接受，却被拒: {e}", spec.id));
             assert_eq!(
                 cfg.backend.effective().as_str(),
                 spec.id,
@@ -1010,15 +1019,25 @@ mod tests {
             );
         }
         // ④ 未知值必须被拒，且错误信息**由表生成**（列举全部已声明 id）
-        let err = parse_args(&["--backend".into(), "nope".into(), "--".into(), "true".into()])
-            .expect_err("未知 --backend 必须被拒");
-        assert!(err.contains(&declared_backend_ids()), "错误信息必须由注册表生成: {err}");
+        let err = parse_args(&[
+            "--backend".into(),
+            "nope".into(),
+            "--".into(),
+            "true".into(),
+        ])
+        .expect_err("未知 --backend 必须被拒");
+        assert!(
+            err.contains(&declared_backend_ids()),
+            "错误信息必须由注册表生成: {err}"
+        );
         // ⑤ 后端专属选项的校验属于该后端（docker 专属选项在 worktree 上必须被拒）
         assert!(
             parse_args(&[
-                "--backend".into(), "worktree".into(),
+                "--backend".into(),
+                "worktree".into(),
                 "--docker-mount-auth".into(),
-                "--".into(), "true".into(),
+                "--".into(),
+                "true".into(),
             ])
             .is_err(),
             "docker 专属选项在 worktree 后端上必须被拒"
