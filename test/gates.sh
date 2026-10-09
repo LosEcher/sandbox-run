@@ -64,12 +64,25 @@ jj_state() {
 
 jj_visible() { ( cd "$1" && jj log --no-graph -T 'change_id.short() ++ "\n"' | grep -v '^zzzzzzzz' | LC_ALL=C sort ); }
 
+# ---- 沙箱目录清理断言的两个坑（2026-10-09 修）---------------------------------
+# sandbox-run 的沙箱目录建在 std::env::temp_dir()（src/sandbox.rs:21）——macOS 下
+# 就是 $TMPDIR（/var/folders/.../T），**不是 /tmp**。旧断言写死 `ls -d /tmp/sandbox-run-*`，
+# 于是同时错在两个方向：
+#   ① 假红（不可归属）：2026-10-08 一个与本次运行毫不相干的 /tmp/sandbox-run-backup
+#      让 G1/G4 双双报 "sandbox dir not cleaned"，门禁红了整整一天；
+#   ② 假绿（看不见）：正常环境下 $TMPDIR 才是真位置，/tmp 永远为空 ⇒ 真泄漏也照样过。
+# 正确判据 = 看对目录 + 只算**本次运行新增**的目录。
+sb_tmp_root() { local r="${TMPDIR:-/tmp}"; printf '%s' "${r%/}"; }
+sb_tmp_snapshot_to() { ls -d "$(sb_tmp_root)"/sandbox-run-* 2>/dev/null | LC_ALL=C sort > "$1" || true; }
+sb_tmp_leaked_since() { ls -d "$(sb_tmp_root)"/sandbox-run-* 2>/dev/null | LC_ALL=C sort | grep -vxF -f "$1" || true; }
+
 # ---------------------------------------------------------------- gate 1
 note "G1: git pass/fail — isolated run, main tree untouched, ledger + cleanup"
 D="$WORK/g1"
 make_git_fixture "$D"
 printf 'exit 0\n' > "$D/verify.sh"; chmod +x "$D/verify.sh"
 BEFORE=$(main_hash "$D")
+sb_tmp_snapshot_to "$WORK/g1-tmp-before"
 OUT=$( cd "$D" && "$SB" --scope-from-git -- ./verify.sh 2>/dev/null ); RC=$?
 [ "$RC" = 0 ] || fail "pass case: expected exit 0, got $RC"
 echo "$OUT" | grep -q '"verdict": "pass"' || fail "pass case: verdict is not pass"
@@ -81,7 +94,7 @@ for i,l in enumerate(open(sys.argv[1])):
 ' "$D/.sandbox-run/runs.jsonl" || fail "pass case: ledger not parseable"
 WT=$( cd "$D" && git worktree list | wc -l | tr -d ' ' )
 [ "$WT" = 1 ] || fail "pass case: sandbox worktree left registered (list = $WT)"
-[ -z "$(ls -d /tmp/sandbox-run-* 2>/dev/null)" ] || fail "pass case: sandbox dir not cleaned"
+[ -z "$(sb_tmp_leaked_since "$WORK/g1-tmp-before")" ] || fail "pass case: sandbox dir not cleaned ($(sb_tmp_leaked_since "$WORK/g1-tmp-before"))"
 
 printf 'exit 1\n' > "$D/verify.sh"
 OUT=$( cd "$D" && "$SB" --scope-from-git -- ./verify.sh 2>/dev/null ); RC=$?
@@ -131,6 +144,7 @@ if command -v jj >/dev/null 2>&1; then
   printf 'exit "$1"\n' > "$D/verify.sh"; chmod +x "$D/verify.sh"
   BEFORE=$(jj_state "$D")
   LOG_BEFORE=$(jj_visible "$D")
+  sb_tmp_snapshot_to "$WORK/g4-tmp-before"
   OUT=$( cd "$D" && "$SB" --scope-from-jj -- ./verify.sh 0 2>/dev/null ); RC=$?
   [ "$RC" = 0 ] || fail "jj pass case: expected exit 0, got $RC"
   echo "$OUT" | grep -q '"verdict": "pass"' || fail "jj pass case: verdict is not pass"
@@ -139,7 +153,7 @@ if command -v jj >/dev/null 2>&1; then
   [ "$(jj_visible "$D")" = "$LOG_BEFORE" ] || fail "jj pass case: new visible change in jj log"
   WS=$( cd "$D" && jj workspace list )
   echo "$WS" | grep -q 'sandbox-run' && fail "jj pass case: residual workspace" || true
-  [ -z "$(ls -d /tmp/sandbox-run-* 2>/dev/null)" ] || fail "jj pass case: sandbox dir not cleaned"
+  [ -z "$(sb_tmp_leaked_since "$WORK/g4-tmp-before")" ] || fail "jj pass case: sandbox dir not cleaned ($(sb_tmp_leaked_since "$WORK/g4-tmp-before"))"
 
   OUT=$( cd "$D" && "$SB" --scope-from-jj -- ./verify.sh 1 2>/dev/null ); RC=$?
   [ "$RC" = 1 ] || fail "jj fail case: expected exit 1, got $RC"
