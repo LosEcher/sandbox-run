@@ -28,13 +28,158 @@ note() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 pass() { printf '  \033[32mPASS\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$*"; FAILS=$((FAILS + 1)); }
 
-# docker availability → skip gracefully (CI has no docker)
+# ------------------------------------------- stub gates (need no docker daemon)
+# A stub `docker` on PATH drives the container state machine, so these gates run
+# everywhere — CI included — instead of being skipped along with the daemon
+# gates below. They exist because `docker kill` tolerates "already stopped": a
+# failed kill used to be indistinguishable from a successful one, and the next
+# run then cleared the shared workspace while a previous run's stragglers could
+# still write into it. Reuse now requires the reset to be *proven*
+# (`docker.rs::reset_and_prove`), so "we could not stop it" has to fail closed.
+SAVED_PATH="$PATH"
+STUB_ROOT=$(mktemp -d)
+mkdir -p "$STUB_ROOT/bin"
+cat > "$STUB_ROOT/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+# Minimal docker CLI stand-in driving the container state machine.
+#   $DOCKER_STUB_DIR/scenario : initial_running=true|false, kill_works=true|false
+#   $DOCKER_STUB_DIR/state    : the live `running` flag (`start` sets it, `kill`
+#                               clears it only when kill_works=true — which is
+#                               how "the kill did not take effect" is modelled)
+#   $DOCKER_STUB_DIR/container: what `cp` copies back to the host workspace
+dir="${DOCKER_STUB_DIR:?DOCKER_STUB_DIR not set}"
+# shellcheck disable=SC1091
+. "$dir/scenario"
+st="$dir/state"
+[ -f "$st" ] || echo "running=$initial_running" > "$st"
+# shellcheck disable=SC1091
+. "$st"
+if command -v shasum >/dev/null 2>&1; then
+  sha=$(shasum -a 256 "$SB_REAL" | cut -d' ' -f1)
+else
+  sha=$(sha256sum "$SB_REAL" | cut -d' ' -f1)
+fi
+case "${1:-}" in
+  inspect)
+    printf '{"Config":{"Image":"ubuntu:24.04","Labels":{"com.losecher.sandbox-run":"1","com.losecher.sandbox-run.schema-version":"1","com.losecher.sandbox-run.host-sha256":"%s","com.losecher.sandbox-run.mount-auth":"0"}},"State":{"Running":%s}}\n' \
+      "$sha" "$running"
+    ;;
+  start) echo "running=true" > "$st" ;;
+  kill) [ "$kill_works" = "true" ] && echo "running=false" > "$st" ;;
+  cp)
+    # Simulate `docker cp <container>:/workspace/. <host>`. The real backend
+    # clears the workspace first (so deletions propagate), so what ends up there
+    # is exactly what this copies — which is what makes "was it cleared again by
+    # cleanup?" observable.
+    eval "dest=\${$#}"
+    mkdir -p "$dest"
+    [ -d "$dir/container" ] && cp -a "$dir/container/." "$dest/" 2>/dev/null
+    ;;
+  *) : ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_ROOT/bin/docker"
+export SB_REAL="$SB"
+
+# Same shape as make_git_fixture below, duplicated on purpose: these gates must
+# run *before* the daemon check (and therefore before that helper is defined).
+stub_repo() {
+  mkdir -p "$1"
+  ( cd "$1" \
+    && git init -q \
+    && git config user.email test@sandbox-run.local \
+    && git config user.name "sandbox-run test" \
+    && echo v1 > tracked.txt \
+    && echo '.sandbox-run/' > .gitignore \
+    && git add -A \
+    && git commit -qm init \
+    && echo v2 > tracked.txt )
+}
+
+stub_setup() { # $1 = arm dir, $2 = initial_running, $3 = kill_works
+  mkdir -p "$1/container"
+  printf 'initial_running=%s\nkill_works=%s\n' "$2" "$3" > "$1/scenario"
+  stub_repo "$1/repo"
+  printf 'exit 0\n' > "$1/repo/verify.sh"
+  chmod +x "$1/repo/verify.sh"
+  # What the stubbed `cp` brings back must equal what the run materialized,
+  # otherwise the pollution gate fires (correctly) and the arm measures that
+  # instead of the reset. The fixture is fixed, so this is deterministic.
+  echo v2 > "$1/container/tracked.txt"
+  echo '.sandbox-run/' > "$1/container/.gitignore"
+  printf 'exit 0\n' > "$1/container/verify.sh"
+  chmod +x "$1/container/verify.sh"
+}
+
+stub_run() { # $1 = arm dir
+  ( cd "$1/repo" && PATH="$STUB_ROOT/bin:$PATH" DOCKER_STUB_DIR="$1" "$SB" \
+      --backend docker -- ./verify.sh >"$1/out" 2>"$1/err" )
+}
+
+WS="$HOME/.cache/sandbox-run/workspace"
+
+note "DS1: a container that survives its kill fails closed (no daemon needed)"
+S="$STUB_ROOT/ds1"
+stub_setup "$S" true false
+stub_run "$S"
+RC=$?
+[ "$RC" = 2 ] || fail "DS1: expected exit 2 (fail closed), got $RC"
+grep -q 'still running after' "$S/err" "$S/out" || fail "DS1: the error must name the unproven reset"
+if [ -f "$S/repo/.sandbox-run/runs.jsonl" ] && grep -q 'verify.start' "$S/repo/.sandbox-run/runs.jsonl"; then
+  fail "DS1: must fail before verify.start (nothing may be materialized first)"
+else
+  pass "DS1: survived kill ⇒ exit 2, named reason, nothing materialized"
+fi
+
+note "DS2: a proven-stopped container proceeds and its workspace is cleared"
+S="$STUB_ROOT/ds2"
+stub_setup "$S" false true
+stub_run "$S"
+RC=$?
+if grep -q 'still running after' "$S/err" "$S/out"; then
+  fail "DS2: the quiescence gate fired although the container was proven stopped"
+elif [ "$RC" != 0 ]; then
+  fail "DS2: a proven reset must let the run finish (got exit $RC)"
+elif [ -n "$(ls -A "$WS" 2>/dev/null)" ]; then
+  fail "DS2: a proven reset must still clear the shared workspace"
+else
+  pass "DS2: proven reset ⇒ exit 0 and the workspace was cleared (control for DS3)"
+fi
+
+note "DS3: a kill that stops working after verify leaves the shared workspace intact"
+S="$STUB_ROOT/ds3"
+stub_setup "$S" false false
+stub_run "$S"
+RC=$?
+[ "$RC" = 2 ] || fail "DS3: expected exit 2 (reset unprovable), got $RC"
+grep -q 'still running after' "$S/err" "$S/out" || fail "DS3: the error must name the unproven reset"
+grep -q 'verify.start' "$S/repo/.sandbox-run/runs.jsonl" || fail "DS3: the run should have reached verify first"
+if [ -f "$WS/tracked.txt" ]; then
+  pass "DS3: reset unprovable ⇒ exit 2 and the shared workspace was NOT cleared"
+else
+  fail "DS3: the shared workspace was cleared although the reset was unproven"
+fi
+
+PATH="$SAVED_PATH"
+rm -rf "$STUB_ROOT"
+
+# docker availability → skip gracefully (CI has no docker). A skip must not hide
+# a stub-gate failure, so the count is reported before leaving.
 if ! command -v docker >/dev/null 2>&1; then
-  echo "docker not found — docker backend gates skipped"
+  echo "docker not found — real-daemon gates skipped"
+  if [ "$FAILS" -gt 0 ]; then
+    echo "$FAILS gate(s) failed"
+    exit 1
+  fi
   exit 0
 fi
 if ! docker info >/dev/null 2>&1; then
-  echo "docker daemon unavailable — docker backend gates skipped"
+  echo "docker daemon unavailable — real-daemon gates skipped"
+  if [ "$FAILS" -gt 0 ]; then
+    echo "$FAILS gate(s) failed"
+    exit 1
+  fi
   exit 0
 fi
 
@@ -43,6 +188,10 @@ if docker inspect "$CN" >/dev/null 2>&1; then
   OWNED=$(docker inspect --format '{{index .Config.Labels "com.losecher.sandbox-run"}}' "$CN" 2>/dev/null)
   if [ "$OWNED" != "1" ]; then
     echo "unowned container $CN exists — docker backend gates skipped (refusing to touch it)"
+    if [ "$FAILS" -gt 0 ]; then
+      echo "$FAILS gate(s) failed"
+      exit 1
+    fi
     exit 0
   fi
   docker rm -f "$CN" >/dev/null 2>&1 || true

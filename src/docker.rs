@@ -23,6 +23,15 @@
 //! ledger): it is kept between runs and reused while the fingerprint matches,
 //! so docker backend runs are serialized (a second concurrent run fails
 //! loudly instead of corrupting the shared workspace).
+//!
+//! - **Reuse requires a proven reset**: the container is killed as a whole at
+//!   the end of every run (and before a container that is already up is
+//!   reused), and that kill is then *verified* — a container still reporting
+//!   `Running` makes the run fail closed (exit 2) and the shared workspace is
+//!   left intact. `docker kill` tolerates "already stopped", so without the
+//!   verification a failed kill and a successful one look the same, and
+//!   clearing the workspace under a live container would blend one run's
+//!   stragglers into the next run's baseline.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -409,7 +418,13 @@ pub fn ensure(opts: &DockerOptions) -> Result<DockerSandbox, String> {
                     removed.combined()
                 ));
             }
-        } else if !inspected.running {
+        } else {
+            // A container that is already up when a run begins is the *recovery*
+            // path (a previous run died before its own reset), not a warm cache:
+            // prove it stopped before its workspace is reused and cleared.
+            if inspected.running {
+                reset_and_prove()?;
+            }
             let started = docker(&["start", CONTAINER_NAME])?;
             if !started.ok {
                 return Err(format!(
@@ -453,6 +468,25 @@ pub fn clear_dir_contents(dir: &Path) -> Result<(), String> {
 /// path). Tolerates "already stopped".
 fn reset_container() {
     let _ = docker(&["kill", CONTAINER_NAME]);
+}
+
+/// Kill the container and **prove** it stopped.
+///
+/// `docker kill` legitimately fails on an already-stopped container, so a
+/// tolerated failure is indistinguishable from a successful kill. Reusing the
+/// shared workspace after that is how one run's stragglers end up writing into
+/// the next run's baseline, so reuse requires the reset to be *proven*:
+/// unprovable ⇒ fail closed (exit 2), never "assume it worked".
+fn reset_and_prove() -> Result<(), String> {
+    reset_container();
+    let inspected = inspect_container()?;
+    if inspected.exists && inspected.running {
+        return Err(format!(
+            "container {CONTAINER_NAME} is still running after `docker kill`: refusing to reuse \
+             it — a previous run's processes may still write into the shared workspace"
+        ));
+    }
+    Ok(())
 }
 
 /// Whole run for the docker backend, mirroring the worktree flow's event
@@ -537,10 +571,14 @@ pub fn run_body(r: &DockerRun<'_>) -> BodyResult {
         Ok((verify, pollution))
     })();
 
-    // whole-container process reset on every path (idempotent with the timeout
-    // kill) — a fresh PID space per run, no background stragglers leak through
-    reset_container();
-    let (cleaned, clean_detail) = cleanup(&sb);
+    // Whole-container process reset on every path (idempotent with the timeout
+    // kill) — a fresh PID space per run, no background stragglers leak through.
+    // Clearing the shared workspace is only safe once that reset is *proven*:
+    // clearing it under a live container is how one run's residue becomes the
+    // next run's baseline.
+    let reset = reset_and_prove();
+    let (cleaned, clean_detail) = cleanup(&sb, reset.is_ok());
+    reset?;
 
     match outcome {
         Ok((verify, pollution)) => {
@@ -656,8 +694,18 @@ fn run_verify(sb: &DockerSandbox, opts: &DockerOptions) -> Result<VerifyResult, 
 /// Host-side cleanup: clear the shared workspace contents (the container is a
 /// design-level persistent resource and stays, stopped, for the next run) and
 /// release the run lock.
-pub fn cleanup(sb: &DockerSandbox) -> (bool, String) {
+///
+/// `clear == false` still releases the lock but leaves the workspace untouched:
+/// used when the container's reset could not be proven stopped, where clearing
+/// the shared workspace would blend two runs' state.
+pub fn cleanup(sb: &DockerSandbox, clear: bool) -> (bool, String) {
     release_lock();
+    if !clear {
+        return (
+            false,
+            "docker workspace left intact (container not proven stopped)".to_string(),
+        );
+    }
     match clear_dir_contents(&sb.workspace) {
         Ok(()) => (
             true,

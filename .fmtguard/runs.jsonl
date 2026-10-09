@@ -65,3 +65,19 @@
 {"detail":"candidate is rustfmt-clean","file":"src/main.rs","gate":"engine.fmt_check","limit":0.0,"metric":0.0,"pass":true,"t":"gate_check","ts":"2026-10-09T06:20:16.507Z"}
 {"applied_files":1,"dry_run":false,"refused":false,"t":"apply","ts":"2026-10-09T06:20:16.507Z"}
 {"files_changed":1,"outputs":["json"],"t":"report_emit","total_added":27,"total_removed":8,"ts":"2026-10-09T06:20:16.507Z","verdict":"ok"}
+{"base":"HEAD","cwd":"/Users/echerlos/syncfolder/project/dsfolder/sandbox-run","dry_run":true,"run_id":"run-1791558696457-0","rustfmt":"rustfmt","source":"git-diff","t":"run_start","toolchain":"rustfmt 1.9.0-stable (2d8144b788 2026-07-07)","ts":"2026-10-09T15:11:36.514Z","vcs":"git","version":"0.4.2"}
+{"excluded":[],"files":["src/docker.rs"],"source":"git-diff","t":"scope_detect","ts":"2026-10-09T15:11:36.515Z","untracked":[]}
+{"edition":"2021","engine":"rustfmt-diff-intersect","file":"src/docker.rs","t":"engine_select","ts":"2026-10-09T15:11:36.515Z"}
+{"added_lines":0,"changed":false,"clip_ms":0,"file":"src/docker.rs","hunk_context":3,"hunks_kept":0,"hunks_total":0,"idempotent":true,"kept_lines":0,"out_of_scope_hunks":0,"removed_lines":0,"rustfmt_duration_ms":50,"rustfmt_first_pass_ms":50,"rustfmt_idempotency_pass_ms":0,"scope_lines":0,"t":"fmt_result","ts":"2026-10-09T15:11:36.566Z"}
+{"detail":"all edited files are within scope","file":null,"gate":"scope.containment","limit":null,"metric":null,"pass":true,"t":"gate_check","ts":"2026-10-09T15:11:36.566Z"}
+{"detail":"0 file(s) changed by formatting","file":null,"gate":"budget.max_files","limit":5.0,"metric":0.0,"pass":true,"t":"gate_check","ts":"2026-10-09T15:11:36.566Z"}
+{"applied_files":0,"dry_run":true,"refused":false,"t":"apply","ts":"2026-10-09T15:11:36.566Z"}
+{"files_changed":0,"outputs":["json"],"t":"report_emit","total_added":0,"total_removed":0,"ts":"2026-10-09T15:11:36.566Z","verdict":"ok"}
+{"base":"HEAD","cwd":"/Users/echerlos/syncfolder/project/dsfolder/sandbox-run","dry_run":false,"run_id":"run-1791558696573-0","rustfmt":"rustfmt","source":"git-diff","t":"run_start","toolchain":"rustfmt 1.9.0-stable (2d8144b788 2026-07-07)","ts":"2026-10-09T15:11:36.626Z","vcs":"git","version":"0.4.2"}
+{"excluded":[],"files":["src/docker.rs"],"source":"git-diff","t":"scope_detect","ts":"2026-10-09T15:11:36.626Z","untracked":[]}
+{"edition":"2021","engine":"rustfmt-diff-intersect","file":"src/docker.rs","t":"engine_select","ts":"2026-10-09T15:11:36.626Z"}
+{"added_lines":0,"changed":false,"clip_ms":0,"file":"src/docker.rs","hunk_context":3,"hunks_kept":0,"hunks_total":0,"idempotent":true,"kept_lines":0,"out_of_scope_hunks":0,"removed_lines":0,"rustfmt_duration_ms":51,"rustfmt_first_pass_ms":51,"rustfmt_idempotency_pass_ms":0,"scope_lines":0,"t":"fmt_result","ts":"2026-10-09T15:11:36.678Z"}
+{"detail":"all edited files are within scope","file":null,"gate":"scope.containment","limit":null,"metric":null,"pass":true,"t":"gate_check","ts":"2026-10-09T15:11:36.678Z"}
+{"detail":"0 file(s) changed by formatting","file":null,"gate":"budget.max_files","limit":5.0,"metric":0.0,"pass":true,"t":"gate_check","ts":"2026-10-09T15:11:36.678Z"}
+{"applied_files":0,"dry_run":false,"refused":false,"t":"apply","ts":"2026-10-09T15:11:36.678Z"}
+{"files_changed":0,"outputs":["json"],"t":"report_emit","total_added":0,"total_removed":0,"ts":"2026-10-09T15:11:36.678Z","verdict":"ok"}
