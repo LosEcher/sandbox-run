@@ -58,6 +58,20 @@ pub enum Event<'a> {
         base: &'a str,
         overlaid_files: usize,
         started_at: u64,
+        /// Wall time of the setup phase (acquire lock → sandbox → overlay →
+        /// baseline), i.e. everything before `verify.start`. Paired with
+        /// `verify.finish.duration_ms` this is the trade a backend choice makes:
+        /// docker pays a container start, the worktree backend pays a checkout.
+        /// Without the split, "the sandbox is slow" is unattributable.
+        duration_ms: u64,
+        /// docker only: how the named container was obtained — `reused` (a
+        /// matching container was started), `recovered` (it was found running
+        /// after a previous run died, so it was killed and proven stopped
+        /// first), `recreated` (fingerprint mismatch) or `created`. That is the
+        /// difference between a warm run and a cold one and it is not derivable
+        /// from the other fields.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        container: Option<&'a str>,
     },
     #[serde(rename = "verify.start")]
     VerifyStart {

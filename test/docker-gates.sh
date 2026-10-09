@@ -50,6 +50,7 @@ cat > "$STUB_ROOT/bin/docker" <<'STUB'
 dir="${DOCKER_STUB_DIR:?DOCKER_STUB_DIR not set}"
 # shellcheck disable=SC1091
 . "$dir/scenario"
+exists="${exists:-true}"
 st="$dir/state"
 [ -f "$st" ] || echo "running=$initial_running" > "$st"
 # shellcheck disable=SC1091
@@ -61,6 +62,10 @@ else
 fi
 case "${1:-}" in
   inspect)
+    if [ "$exists" != "true" ]; then
+      echo "Error: No such container: sandbox-run" >&2
+      exit 1
+    fi
     printf '{"Config":{"Image":"ubuntu:24.04","Labels":{"com.losecher.sandbox-run":"1","com.losecher.sandbox-run.schema-version":"1","com.losecher.sandbox-run.host-sha256":"%s","com.losecher.sandbox-run.mount-auth":"0"}},"State":{"Running":%s}}\n' \
       "$sha" "$running"
     ;;
@@ -97,9 +102,10 @@ stub_repo() {
     && echo v2 > tracked.txt )
 }
 
-stub_setup() { # $1 = arm dir, $2 = initial_running, $3 = kill_works
+stub_setup() { # $1 = arm dir, $2 = initial_running, $3 = kill_works, $4 = exists (default true)
+  local exists="${4:-true}"
   mkdir -p "$1/container"
-  printf 'initial_running=%s\nkill_works=%s\n' "$2" "$3" > "$1/scenario"
+  printf 'initial_running=%s\nkill_works=%s\nexists=%s\n' "$2" "$3" "$exists" > "$1/scenario"
   stub_repo "$1/repo"
   printf 'exit 0\n' > "$1/repo/verify.sh"
   chmod +x "$1/repo/verify.sh"
@@ -146,6 +152,63 @@ elif [ -n "$(ls -A "$WS" 2>/dev/null)" ]; then
 else
   pass "DS2: proven reset ⇒ exit 0 and the workspace was cleared (control for DS3)"
 fi
+
+note "DS4: setup accounting tells a warm run from a cold one"
+# A matching container is the warm path (`reused`); an absent one is the cold
+# path (`created`). Both must record their setup cost, which is the number a
+# backend choice trades against.
+setup_field() { # $1 = ledger, $2 = field
+  python3 -c '
+import json,sys
+for line in open(sys.argv[1]):
+    d = json.loads(line)
+    if d.get("t") == "sandbox.setup":
+        print(d.get(sys.argv[2], "MISSING"))
+        break
+else:
+    print("NO-SETUP-EVENT")
+' "$1" "$2"
+}
+WARM=$(setup_field "$S/repo/.sandbox-run/runs.jsonl" container)
+WARM_MS=$(setup_field "$S/repo/.sandbox-run/runs.jsonl" duration_ms)
+[ "$WARM" = "reused" ] || fail "DS4: warm run must record container=reused, got '$WARM'"
+case "$WARM_MS" in
+  ''|*[!0-9]*) fail "DS4: warm run must record a numeric setup duration_ms, got '$WARM_MS'" ;;
+  *) pass "DS4a: warm run records container=reused + duration_ms=$WARM_MS" ;;
+esac
+
+S="$STUB_ROOT/ds4"
+stub_setup "$S" false true false
+stub_run "$S"
+RC=$?
+[ "$RC" = 0 ] || fail "DS4: cold run (no container yet) must succeed, got exit $RC"
+COLD=$(setup_field "$S/repo/.sandbox-run/runs.jsonl" container)
+COLD_MS=$(setup_field "$S/repo/.sandbox-run/runs.jsonl" duration_ms)
+case "$COLD_MS" in
+  ''|*[!0-9]*) fail "DS4: cold run must record a numeric setup duration_ms, got '$COLD_MS'" ;;
+  *) : ;;
+esac
+if [ "$COLD" = "created" ]; then
+  pass "DS4b: cold run records container=created + duration_ms=$COLD_MS (warm and cold are distinguishable)"
+else
+  fail "DS4: cold run must record container=created, got '$COLD'"
+fi
+# The verify side of the split must still be recorded, otherwise the setup
+# number has nothing to be compared against.
+VERIFY_MS=$(python3 -c '
+import json,sys
+for line in open(sys.argv[1]):
+    d = json.loads(line)
+    if d.get("t") == "verify.finish":
+        print(d.get("duration_ms", "MISSING"))
+        break
+else:
+    print("NO-VERIFY-FINISH")
+' "$S/repo/.sandbox-run/runs.jsonl")
+case "$VERIFY_MS" in
+  ''|*[!0-9]*) fail "DS4: verify.finish must record duration_ms, got '$VERIFY_MS'" ;;
+  *) pass "DS4c: setup_ms and verify_ms are both in the ledger" ;;
+esac
 
 note "DS3: a kill that stops working after verify leaves the shared workspace intact"
 S="$STUB_ROOT/ds3"

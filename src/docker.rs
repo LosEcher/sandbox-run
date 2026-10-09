@@ -85,6 +85,10 @@ pub struct DockerSandbox {
     /// the inode, not the path): contents are cleared, never the dir.
     pub workspace: PathBuf,
     pub container: String,
+    /// How this run obtained the container: `created` / `recreated` / `reused`
+    /// / `recovered`. Recorded in `sandbox.setup` so a warm run and a cold run
+    /// are distinguishable in the ledger instead of only in wall-clock noise.
+    pub container_action: &'static str,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -402,6 +406,9 @@ pub fn ensure(opts: &DockerOptions) -> Result<DockerSandbox, String> {
         .map_err(|e| format!("cannot create docker workspace {}: {e}", ws.display()))?;
 
     let inspected = inspect_container()?;
+    // Recorded in `sandbox.setup` so warm runs and cold runs are distinguishable
+    // in the ledger (not just in wall-clock noise).
+    let mut action = "created";
     if inspected.exists {
         if !inspected.owned {
             return Err(format!(
@@ -418,13 +425,17 @@ pub fn ensure(opts: &DockerOptions) -> Result<DockerSandbox, String> {
                     removed.combined()
                 ));
             }
+            action = "recreated";
         } else {
             // A container that is already up when a run begins is the *recovery*
             // path (a previous run died before its own reset), not a warm cache:
             // prove it stopped before its workspace is reused and cleared.
-            if inspected.running {
+            action = if inspected.running {
                 reset_and_prove()?;
-            }
+                "recovered"
+            } else {
+                "reused"
+            };
             let started = docker(&["start", CONTAINER_NAME])?;
             if !started.ok {
                 return Err(format!(
@@ -441,6 +452,7 @@ pub fn ensure(opts: &DockerOptions) -> Result<DockerSandbox, String> {
     Ok(DockerSandbox {
         workspace: ws,
         container: CONTAINER_NAME.to_string(),
+        container_action: action,
     })
 }
 
@@ -494,6 +506,7 @@ fn reset_and_prove() -> Result<(), String> {
 /// verify result, pollution list, overlaid count, cleanup outcome and the
 /// backend name.
 pub fn run_body(r: &DockerRun<'_>) -> BodyResult {
+    let setup_start = events::now_ms();
     acquire_lock()?;
     let sb = ensure(r.opts)?;
     let log = r.log;
@@ -510,6 +523,8 @@ pub fn run_body(r: &DockerRun<'_>) -> BodyResult {
             base: &scope.base,
             overlaid_files: overlaid,
             started_at: events::now_ms(),
+            duration_ms: events::now_ms().saturating_sub(setup_start),
+            container: Some(sb.container_action),
         },
     )
     .map_err(|e| format!("cannot write event log: {e}"))?;

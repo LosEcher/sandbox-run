@@ -634,6 +634,7 @@ fn run_vcs_body(
     log: Option<&Path>,
     run_id: &str,
 ) -> docker::BodyResult {
+    let setup_start = events::now_ms();
     let sb = sandbox::setup(vcs, &scope.base, run_id, cwd)?;
     let backend = sb.backend;
 
@@ -648,6 +649,9 @@ fn run_vcs_body(
                 base: &scope.base,
                 overlaid_files: overlaid,
                 started_at: events::now_ms(),
+                duration_ms: events::now_ms().saturating_sub(setup_start),
+                // VCS backends have no persistent container to reuse.
+                container: None,
             },
         )
         .map_err(|e| format!("cannot write event log: {e}"))?;
