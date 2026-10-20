@@ -37,6 +37,11 @@ cargo fmt --check                       # 红 = scope 外有格式债，整文�
   clean-verify（这是特性不是缺陷）。
 - **台账**：`.sandbox-run/runs.jsonl` 追加 JSONL 是唯一真相；status/log 是派生视图；
   悬空 run.start（无 report.emit）合成 `interrupted`（镜像 DSH repair）。
+- **纯核心有 Miri 门禁**：`scripts/miri-pure-core.sh`（引擎与 dsfolder
+  `scripts/miri-pure-core/` 逐字一致；参数在本仓 `scripts/miri-pure-core.conf`）。
+  改 `types`/`scope`/`sandbox` 后跑一次；`0` pass · `1` fail（UB / 测试失败 / 低于测试下限）
+  · `2` 判不了（缺 Miri/sysroot/conf）——**`2` 不是通过**。加纯核心测试要同步抬
+  `MIRI_MIN_PASSED`。
 
 ## 约定
 
