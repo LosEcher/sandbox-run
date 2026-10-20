@@ -59,6 +59,13 @@ jobs:
         # the fleet scripts, agent notes, CI config and this repo's own tool
         # ledgers. The pattern must list every one of them — `.rustopt/` shipped
         # unnoticed until it was added here.
+        #
+        # `shell: bash` is required, not cosmetic: the default shell on
+        # windows-latest is PowerShell, which parses `if grep -Eq …; then` as a
+        # syntax error. Without this line the Windows leg dies here on every
+        # push — a permanently red job is how a real regression stops being
+        # noticed (unirun hit the identical failure on its first tag run).
+        shell: bash
         run: |
           set -euo pipefail
           DENY='^(scripts/|AGENTS\.md|\.github/|\.fmtguard/|\.rustopt/|\.DS_Store)'
